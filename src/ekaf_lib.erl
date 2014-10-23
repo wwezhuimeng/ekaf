@@ -5,6 +5,7 @@
 -export([
          %% API
          prepare/1,
+		 repair/1,
          common_async/3,
          common_sync/3, common_sync/4,
          start_child/4,
@@ -39,6 +40,14 @@ prepare(Topic)->
     ekaf_fsm:start_link([
                          self(),
                          ekaf_lib:get_bootstrap_broker(),Topic]).
+
+repair(Topic) ->
+	Workers = [ Id || {{[_,_,T,_,_],_} = Id,_,_,_} <- supervisor:which_children(ekaf_sup), 
+					  T == Topic ],
+	lists:foreach( fun(Worker) ->
+						   supervisor:terminate_child(ekaf_sup, Worker),
+						   supervisor:restart_child(ekaf_sup, Worker)
+				   end, Workers).
 
 common_async(Event, Topic, Data)->
     ekaf:pick(Topic, fun(Worker)->
@@ -334,7 +343,7 @@ start_child(Broker, Topic, Leader, PartitionId)->
      begin
          ekaf_sup:start_child(ekaf_sup,
                               {{WorkerArgs,X}, {ekaf_fsm, start_link, [WorkerArgs]},
-                               permanent, infinity, worker, [ekaf_fsm]}
+                               permanent, brutal_kill, worker, [ekaf_fsm]}
                              )
      end || X<- lists:seq(1, proplists:get_value(size, SizeArgs))].
 

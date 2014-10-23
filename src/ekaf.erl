@@ -13,7 +13,7 @@
 -export([start/0, start/2]).
 -export([stop/0, stop/1]).
 
--export([prepare/1, pick/1, pick/2,
+-export([prepare/1, pick/1, pick/2, repair/1,
          publish/2, batch/2,
          produce_sync_batched/2, produce_async_batched/2,
          produce_sync/2, produce_async/2,
@@ -89,3 +89,6 @@ pick(Topic)->
 pick(Topic,Callback)->
     %% asynchronous
     ekaf_picker:pick(Topic, Callback).
+
+repair(Topic) ->
+	ekaf_lib:repair(Topic).
