@@ -28,7 +28,7 @@ start_link(Args)->
 %% @private
 -spec init(list()) -> {ok, _}.
 init(_Args) ->
-    {ok, { {one_for_one, 10, 10}, [] }}.
+    {ok, { {one_for_one, 10, 1}, [] }}.
 
 %%====================================================================
 %% Internal functions

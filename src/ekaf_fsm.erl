@@ -13,6 +13,7 @@
 
 -define(HIBERNATE_TIMEOUT, undefined).
 -define(KEEPALIVE_INTERVAL, 60*1000).
+
 %%--------------------------------------------------------------------
 %% External exports
 -export([start_link/1, init/1]).
@@ -22,9 +23,9 @@
          handle_event/3,
          handle_sync_event/4, handle_info/3, terminate/3, code_change/4]).
 %% states
--export([connected/2, connected/3,       %% Connection with the broker established
-         bootstrapping/2, bootstrapping/3,  %% Asked for metadata and waiting
-         ready/2, ready/3,    %% Got metadata and ready to send
+-export([connected/2,      %% Connection with the broker established
+         bootstrapping/2,  %% Asked for metadata and waiting
+         ready/2, ready/3, %% Got metadata and ready to send
          fsm_next_state/2, fsm_next_state/3
          ]).
 
@@ -65,7 +66,7 @@ init([ReplyTo, Broker, Topic]) ->
             {ok, connected, State};
         {error, Reason} ->
             ?ERROR_MSG("~p",[Reason]),
-            {stop, Reason}
+            {stop, {start_error, Reason}}
     end;
 
 init([PoolName, Broker, Topic, Leader, Partition]=_Args) ->
@@ -117,10 +118,7 @@ init([PoolName, Broker, Topic, Leader, Partition]=_Args) ->
 %%          {stop, Reason, NewStateData}
 %%--------------------------------------------------------------------
 connected({metadata,_Topic}=Event, State) ->
-    ekaf_lib:handle_connected(Event, State);
-
-connected(_Event, State)->
-    ekaf_lib:handle_continue_when_not_ready(connected,_Event,State).
+    ekaf_lib:handle_connected(Event, State).
 
 % {metadata,0,
 %       [{broker,2,<<"vagrant-ubuntu-precise-64">>,9092},
@@ -140,9 +138,7 @@ connected(_Event, State)->
 %               [{partition,1,0,1,[{replica,1}],[{isr,1}]},
 %                {partition,0,0,3,[{replica,3}],[{isr,3}]}]}]}
 bootstrapping({metadata,Metadata}, State)->
-    ekaf_lib:handle_metadata_during_bootstrapping({metadata,Metadata}, State);
-bootstrapping(_Event, State)->
-    ekaf_lib:handle_continue_when_not_ready(bootstrapping,_Event,State).
+    ekaf_lib:handle_metadata_during_bootstrapping({metadata,Metadata}, State).
 
 ready({produce_async, _Messages} = Async, PrevState)->
     ekaf_lib:handle_async_as_batch(false, Async, PrevState);
@@ -178,9 +174,8 @@ ready({timeout, Timer, <<"refresh">>}, #ekaf_fsm{ buffer = Buffer, max_buffer_si
             end,
     gen_fsm:cancel_timer(Timer),
     gen_fsm:start_timer(NextTTL,<<"refresh">>),
-    fsm_next_state(ready, State#ekaf_fsm{ to_buffer = true, last_known_size = Len, cor_id = CorId });
-ready(_Event, State)->
-    fsm_next_state(ready,State).
+    fsm_next_state(ready, State#ekaf_fsm{ to_buffer = true, last_known_size = Len, cor_id = CorId }).
+
 %%--------------------------------------------------------------------
 %% Func: StateName/3
 %% Returns: {next_state, NextStateName, NextStateData}            |
@@ -207,15 +202,8 @@ ready(buffer_size, _From, State) ->
     {reply, Reply, ready, State};
 ready(info, _From, State) ->
     Reply = State,
-    {reply, Reply, ready, State};
-ready(_Unknown, _From, State) ->
-    Reply = ok,
     {reply, Reply, ready, State}.
 
-connected(Event, From, State)->
-    ekaf_lib:handle_reply_when_not_ready(connected, Event, From, State).
-bootstrapping(Event, From, State)->
-    ekaf_lib:handle_reply_when_not_ready(bootstrapping, Event, From, State).
 %%--------------------------------------------------------------------
 %% Func: handle_event/3
 %% Returns: {next_state, NextStateName, NextStateData}          |
@@ -265,7 +253,13 @@ handle_info({tcp, _Port, <<CorrelationId:32,_/binary>> = Packet}, ready, #ekaf_f
     fsm_next_state(ready, Next);
 handle_info({tcp_closed,Socket}, ready, State)->
     ekaf_lib:close_socket(Socket),
-    fsm_next_state(ready, State#ekaf_fsm{ socket = undefined });
+    fsm_next_state(stop, State#ekaf_fsm{ socket = undefined });
+
+handle_info({error, Reason}, _StateName, State) ->
+    ?ERROR_MSG("~n error occur in ekaf_fsm due to ~p state:~p ~n",
+			   [os:timestamp(), Reason, State]),
+	{stop, {error, Reason}};
+
 handle_info(Info, StateName, State) ->
     ?INFO_MSG("~n got info at ~p ~p state:~p",[os:timestamp(), Info, State]),
     fsm_next_state(StateName, State).
@@ -275,6 +269,10 @@ handle_info(Info, StateName, State) ->
 %% Purpose: Shutdown the fsm
 %% Returns: any
 %%--------------------------------------------------------------------
+terminate({start_error, Reason}, StateName, State) ->
+	timer:sleep(500), %% delay start_error terminations to avoid the supervisor exit 
+	terminate(Reason, StateName, State);
+
 terminate(_Reason, _StateName, State) ->
     spawn(fun()->
                   ekaf_lib:close_socket(State#ekaf_fsm.socket)

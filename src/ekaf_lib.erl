@@ -200,15 +200,21 @@ spawn_sync_as_batch(MessageSets, #ekaf_fsm{ socket = Socket, client_id = ClientI
           end).
 
 
-handle_connected({metadata, Topic}, #ekaf_fsm{ socket = Socket} = State)->
+handle_connected({metadata, Topic}, #ekaf_fsm{} = State)->
     CorrelationId = State#ekaf_fsm.cor_id,
     Request = ekaf_protocol:encode_metadata_request(CorrelationId, "", [Topic]),
     case gen_tcp:send(State#ekaf_fsm.socket, Request) of
         ok ->
-            Metadata = recv_incoming_metadata(Socket,<<>>),
-            NewState = State#ekaf_fsm{cor_id = CorrelationId + 1},
-            gen_fsm:send_event(self(), {metadata,Metadata}),
-            fsm_next_state(bootstrapping, NewState);
+            Metadata = recv_incoming_metadata(),
+			case Metadata of
+				{error, Reason} -> 
+					?INFO_MSG("~n stop when recving data due to ~p ~n",[Reason]),
+					{stop, Reason, State};
+				_ ->
+					NewState = State#ekaf_fsm{cor_id = CorrelationId + 1},
+					gen_fsm:send_event(self(), {metadata,Metadata}),
+					fsm_next_state(bootstrapping, NewState)
+			end;
         Reason ->
            ?INFO_MSG("~n stop since ~p",[Reason]),
             {stop, Reason, State}
@@ -244,15 +250,22 @@ handle_metadata_during_bootstrapping({metadata,Metadata}, #ekaf_fsm{ topic = Top
     State#ekaf_fsm.reply_to ! {ready,Started},
     {stop, normal, State#ekaf_fsm{metadata = Metadata}}.
 
-handle_metadata_during_ready({metadata, Topic}, _From, #ekaf_fsm{ socket = Socket } = State)->
+handle_metadata_during_ready({metadata, Topic}, _From, #ekaf_fsm{} = State)->
     CorrelationId = State#ekaf_fsm.cor_id+1,
     ClientId = State#ekaf_fsm.client_id,
     Request = ekaf_protocol:encode_metadata_request(CorrelationId,ClientId, [Topic]),
     case gen_tcp:send(State#ekaf_fsm.socket, Request) of
         ok ->
-            Response = recv_incoming_metadata(Socket, <<>>),
-            NewState = State#ekaf_fsm{cor_id = CorrelationId + 1},
-            {reply, Response, ready, NewState};
+            Response = recv_incoming_metadata(),
+			case Response of
+				{error, Reason} -> 
+					?INFO_MSG("~n stop when recving data due to ~p ~n",[Reason]),
+					{stop, Reason, State};
+				_ ->
+					NewState = State#ekaf_fsm{cor_id = CorrelationId + 1},
+					{reply, Response, ready, NewState}				
+			end;
+
         Reason ->
             ?ERROR_MSG("~p",[Reason]),
             {stop, Reason, State}
@@ -343,7 +356,7 @@ start_child(Broker, Topic, Leader, PartitionId)->
      begin
          ekaf_sup:start_child(ekaf_sup,
                               {{WorkerArgs,X}, {ekaf_fsm, start_link, [WorkerArgs]},
-                               permanent, brutal_kill, worker, [ekaf_fsm]}
+                               permanent, 500, worker, [ekaf_fsm]}
                              )
      end || X<- lists:seq(1, proplists:get_value(size, SizeArgs))].
 
@@ -453,15 +466,15 @@ fsm_next_state(StateName,State, Timeout)->
     ekaf_fsm:fsm_next_state(StateName, State, Timeout).
 
 
-recv_incoming_metadata(Socket,Acc)->
+recv_incoming_metadata()->
     receive
         {tcp, _, Packet} ->
             case Packet of
                 <<_CorrelationId:32, _/binary>>  ->
                     ekaf_protocol:decode_metadata_response(Packet);
                 Packet ->
-                    {error,Packet}
+                    {error, {invalid_packet, Packet}}
             end;
-        _E ->
-            recv_incoming_metadata(Socket, Acc )
+        E ->
+			E
     end.
