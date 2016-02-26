@@ -113,7 +113,7 @@ pick_test_() ->
 
 t_pick_from_new_pool()->
     Topic = ?TEST_TOPIC,
-    ?assertMatch({error,_},pg2:get_closest_pid(Topic)),
+    ?assertMatch({error,_},pg2l:get_closest_pid(Topic)),
     ?assertMatch({ok,_}, ekaf:prepare(Topic)),
     ekaf:pick(?TEST_TOPIC,fun(Worker)->
                                   ?assertNotEqual( Worker, undefined),
@@ -261,10 +261,26 @@ t_produce_sync_in_batch_to_topic()->
 
 t_restart_kafka_broker()->
     kafka_consumer ! {flush, 2, self()},
+
+    %% io:format("~p~n",[ erlang:process_info(whereis(kafkamocker_fsm), current_stacktrace)]),    
+    %% io:format("~p~n",[ erlang:process_info(whereis(kafkamocker_fsm))]),
+    %% io:format("~p~n",[ sys:get_state(whereis(kafkamocker_fsm))]),
+    io:format("~p~n",[ pg2l:get_members(?TEST_TOPIC)]),
+    io:format("~p~n",[supervisor:which_children(ranch_sup)]),
+
     gen_fsm:send_event(kafkamocker_fsm, {broker, stop, #kafkamocker_broker{ id = 1, host = "localhost", port = 9907 }}),
-    gen_fsm:send_event(kafkamocker_fsm, {broker, start, #kafkamocker_broker{ id = 1, host = "localhost", port = 9907 }}),
-    timer:sleep(100),
-    receive
+
+    supervisor:terminate_child(ranch_sup, {ranch_listener_sup, {"localhost", 9907}}),
+
+    io:format("~p~n",[supervisor:which_children(ranch_sup)]),
+
+    io:format("~p~n",[ sys:get_state(whereis(kafkamocker_fsm))]),
+    io:format("~p~n",[ pg2l:get_members(?TEST_TOPIC)]),
+
+    %% gen_fsm:send_event(kafkamocker_fsm, {broker, start, #kafkamocker_broker{ id = 1, host = "localhost", port = 9907 }}),
+
+    timer:sleep(1000),
+    receive       
         {flush, X}->
             ?assertEqual([?EKAF_CALLBACK_WORKER_DOWN, ?EKAF_CALLBACK_WORKER_UP],X)
     end,
